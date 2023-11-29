@@ -4,17 +4,16 @@ import "core:runtime"
 import "core:strings"
 import rl "vendor:raylib"
 
-DEBUG :: true
-FONT_SIZE :: 60
-
-
-CursorPos :: struct {
-    x, y: int
-}
+DEBUG :: false
+font_size := i32(24)
 
 Line :: struct {
     number: int,
     text: [dynamic]u8
+}
+
+CursorPos :: struct {
+    x, y: int
 }
 
 Buffer :: struct {
@@ -39,17 +38,23 @@ copy_to_cstring :: proc(text: [dynamic]u8, alloc := context.temp_allocator) -> c
 }
 
 get_font_dimentions :: proc(font: ^rl.Font) -> (width, height: f32) {
-    mz := rl.MeasureTextEx(font^, "a", FONT_SIZE, 0)
+    mz := rl.MeasureTextEx(font^, "a", f32(font_size), 0)
     width, height = mz.x, mz.y
     return 
+}
+
+pressing_down_modifiers :: proc() -> bool {
+    return rl.IsKeyDown(.LEFT_SHIFT)   || rl.IsKeyDown(.RIGHT_SHIFT)   ||
+           rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL) ||
+           rl.IsKeyDown(.LEFT_ALT)     || rl.IsKeyDown(.RIGHT_ALT)
 }
 
 main :: proc() {
     rl.SetConfigFlags({.MSAA_4X_HINT, .WINDOW_RESIZABLE})
     rl.InitWindow(600, 400, "Odit")
     defer rl.CloseWindow()
-    font := rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", FONT_SIZE, nil, 0)
-    buffer := Buffer{CursorPos{0, 0}, make([dynamic]Line)}
+    font := rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
+    buffer := Buffer{{0, 0}, make([dynamic]Line)}
 
     rl.SetTargetFPS(60)
 
@@ -58,7 +63,7 @@ main :: proc() {
         key := rl.GetKeyPressed()
         pressed := i32(rl.GetCharPressed())
 
-        if pressed >= ' ' && pressed <= '~' {
+        if pressed >= ' ' && pressed <= '~' && !pressing_down_modifiers() {
             using buffer
             if len(lines) == 0 {
                 append(&lines, Line{0, make([dynamic]u8)})
@@ -70,21 +75,23 @@ main :: proc() {
         #partial switch(key) {
             case .BACKSPACE:
                 using buffer
-                if cursor.x - 1 >= 0 {
-                    cursor.x -= 1
-                }
-                if len(lines[cursor.y].text) > 0 {
-                    ordered_remove(&lines[cursor.y].text, cursor.x)
-                }
-                else if cursor.y - 1 >= 0 {
+                if cursor.x == 0  && cursor.y - 1 >= 0 {
+                    whole_line := lines[cursor.y].text[:]
                     if len(lines) >= 1 {
                         ordered_remove(&lines, cursor.y)
                     }
                     cursor.y -= 1
                     cursor.x = len(lines[cursor.y].text)
+                    append(&lines[cursor.y].text, ..whole_line)
                     for i := cursor.y + 1; i < len(lines); i += 1 {
                         lines[i].number -= 1
                     }
+                }
+                else if len(lines[cursor.y].text) > 0 {
+                    if cursor.x - 1 >= 0 {
+                        cursor.x -= 1
+                    }
+                    ordered_remove(&lines[cursor.y].text, cursor.x)
                 }
 
             case .ENTER:
@@ -161,6 +168,17 @@ main :: proc() {
                 }
         }
 
+        if rl.IsKeyPressed(.EQUAL) && rl.IsKeyDown(.LEFT_CONTROL) {
+            font_size += 1
+            rl.UnloadFont(font)
+            font = rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
+        }
+        else if rl.IsKeyPressed(.MINUS) && rl.IsKeyDown(.LEFT_CONTROL) {
+            font_size -= 1
+            rl.UnloadFont(font)
+            font = rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
+        }
+
         rl.BeginDrawing()
         rl.ClearBackground(rl.BLACK)
         {
@@ -171,15 +189,15 @@ main :: proc() {
             rl.DrawRectangleRec(rl.Rectangle{f32(cursor.x)*width, f32(cursor.y)*height, width, height}, rl.GREEN)
 
             // Buffer text
-            fmt.println("---------------------")
+            when DEBUG do fmt.println("---------------------")
             for _, i in lines {
-                fmt.println(lines[i].number, ":", transmute(string)lines[i].text[:])
+                when DEBUG do fmt.println(lines[i].number, ":", transmute(string)lines[i].text[:])
                 text := copy_to_cstring(lines[i].text)
-                pos := rl.Vector2{0, f32(lines[i].number*FONT_SIZE)}
-                rl.DrawTextEx(font, text, pos, FONT_SIZE, 0, rl.WHITE)
+                pos := rl.Vector2{0, f32(lines[i].number*cast(int)font_size)}
+                rl.DrawTextEx(font, text, pos, f32(font_size), 0, rl.WHITE)
             }
             free_all(context.temp_allocator)
-            fmt.println("---------------------")
+            when DEBUG do fmt.println("---------------------")
 
             when DEBUG {
                 if len(lines) > 0 {
