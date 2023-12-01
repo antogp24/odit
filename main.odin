@@ -1,10 +1,11 @@
 package odit 
 import "core:fmt"
-import "core:runtime"
+import "core:math"
 import "core:strings"
 import rl "vendor:raylib"
 
 DEBUG :: false
+
 font_size := i32(24)
 
 Line :: struct {
@@ -43,129 +44,183 @@ get_font_dimentions :: proc(font: ^rl.Font) -> (width, height: f32) {
     return 
 }
 
-pressing_down_modifiers :: proc() -> bool {
-    return rl.IsKeyDown(.LEFT_SHIFT)   || rl.IsKeyDown(.RIGHT_SHIFT)   ||
-           rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL) ||
-           rl.IsKeyDown(.LEFT_ALT)     || rl.IsKeyDown(.RIGHT_ALT)
+timers := map[rl.KeyboardKey]f32 {
+    .BACKSPACE = 0.0,
+    .ENTER     = 0.0,
+    .UP        = 0.0,
+    .DOWN      = 0.0,
+    .LEFT      = 0.0,
+    .RIGHT     = 0.0,
+}
+
+timer_update :: proc(key: rl.KeyboardKey, dt: f32) {
+    if rl.IsKeyDown(key) {
+        timers[key] += dt
+    } else {
+        timers[key] = 0
+    }
+}
+
+// https://www.geogebra.org/calculator
+// Square wave function that returns values between 0 and 1
+oscilate :: proc (x, period: f32) -> bool {
+    using math
+    result := -floor(sin(x * PI / period))
+    return bool(int(result))
+}
+
+key_is_pressed_or_down :: proc(pressed, key: rl.KeyboardKey, threshold: f32 = 0.3) -> bool {
+    return pressed == key || (timers[key] > threshold && oscilate(timers[key], 0.015))
+}
+
+press_backspace :: proc(using buffer: ^Buffer) {
+    if cursor.x == 0 && cursor.y == 0 {
+        return
+    }
+    else if cursor.x == 0  && cursor.y - 1 >= 0 {
+        whole_line := lines[cursor.y].text[:]
+        if len(lines) >= 1 {
+            ordered_remove(&lines, cursor.y)
+        }
+        cursor.y -= 1
+        cursor.x = len(lines[cursor.y].text)
+        append(&lines[cursor.y].text, ..whole_line)
+        for i := cursor.y + 1; i < len(lines); i += 1 {
+            lines[i].number -= 1
+        }
+    }
+    else if len(lines[cursor.y].text) > 0 {
+        if cursor.x - 1 >= 0 {
+            cursor.x -= 1
+        }
+        ordered_remove(&lines[cursor.y].text, cursor.x)
+    }
+}
+
+press_enter :: proc(using buffer: ^Buffer) {
+    line_number := cursor.y + 1
+    if cursor.y + 1 != len(lines) {
+        line_number = cursor.y
+    }
+
+    enter_before_end := cursor.x < len(lines[cursor.y].text)
+    text_to_copy: [dynamic]u8
+    defer if enter_before_end do free_all(context.temp_allocator)
+
+    if enter_before_end {
+        whole_line := lines[cursor.y].text[:]
+        start, end := cursor.x, len(whole_line)
+        text_to_copy = make([dynamic]u8, 0, end - start, context.temp_allocator)
+        append(&text_to_copy, ..whole_line[start:end])
+        remove_range(&lines[cursor.y].text, start, end)
+    }
+
+    cursor.x = 0
+    cursor.y += 1
+
+    inject_at(&lines, cursor.y, Line{line_number, make([dynamic]u8)})
+
+    if enter_before_end {
+        append(&lines[cursor.y].text, ..text_to_copy[:])
+    }
+
+    if cursor.y + 1 != len(lines) {
+        for i := cursor.y; i < len(lines); i += 1 {
+            lines[i].number += 1
+        }
+    }
+}
+
+move_cursor_up :: proc(using buffer: ^Buffer) {
+    if cursor.y - 1 >= 0 {
+        cursor.y -= 1
+        if cursor.x > len(lines[cursor.y].text) {
+            cursor.x = len(lines[cursor.y].text)
+        }
+    }
+}
+
+move_cursor_down :: proc(using buffer: ^Buffer) {
+    if cursor.y + 1 < len(lines) {
+        cursor.y += 1
+        if cursor.x > len(lines[cursor.y].text) {
+            cursor.x = len(lines[cursor.y].text)
+        }
+    }
+}
+
+move_cursor_left :: proc(using buffer: ^Buffer) {
+    if cursor.x - 1 >= 0 {
+        cursor.x -= 1
+    }
+    else if cursor.y - 1 >= 0 {
+        cursor.y -= 1
+        cursor.x = len(lines[cursor.y].text)
+    }
+}
+
+move_cursor_right :: proc(using buffer: ^Buffer) {
+    if len(lines) == 0 do return
+    if cursor.x + 1 <= len(lines[cursor.y].text) {
+        cursor.x += 1
+    }
+    else if cursor.y + 1 < len(lines) {
+        cursor.x = 0
+        cursor.y += 1
+    }
 }
 
 main :: proc() {
+    rl.SetTargetFPS(60)
     rl.SetConfigFlags({.MSAA_4X_HINT, .WINDOW_RESIZABLE})
     rl.InitWindow(600, 400, "Odit")
     defer rl.CloseWindow()
+
     font := rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
     buffer := Buffer{{0, 0}, make([dynamic]Line)}
 
-    rl.SetTargetFPS(60)
-
     for !rl.WindowShouldClose() {
 
-        key := rl.GetKeyPressed()
-        pressed := i32(rl.GetCharPressed())
+        dt := rl.GetFrameTime()
+        char := i32(rl.GetCharPressed())
 
-        if pressed >= ' ' && pressed <= '~' && !pressing_down_modifiers() {
+        if (char >= ' ' && char <= '~') && !(rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.LEFT_ALT)) {
             using buffer
             if len(lines) == 0 {
                 append(&lines, Line{0, make([dynamic]u8)})
             }
-            inject_at(&lines[cursor.y].text, cursor.x, u8(pressed))
+            inject_at(&lines[cursor.y].text, cursor.x, u8(char))
             cursor.x += 1
         }
 
-        #partial switch(key) {
-            case .BACKSPACE:
-                using buffer
-                if cursor.x == 0  && cursor.y - 1 >= 0 {
-                    whole_line := lines[cursor.y].text[:]
-                    if len(lines) >= 1 {
-                        ordered_remove(&lines, cursor.y)
-                    }
-                    cursor.y -= 1
-                    cursor.x = len(lines[cursor.y].text)
-                    append(&lines[cursor.y].text, ..whole_line)
-                    for i := cursor.y + 1; i < len(lines); i += 1 {
-                        lines[i].number -= 1
-                    }
-                }
-                else if len(lines[cursor.y].text) > 0 {
-                    if cursor.x - 1 >= 0 {
-                        cursor.x -= 1
-                    }
-                    ordered_remove(&lines[cursor.y].text, cursor.x)
-                }
+        for key in timers {
+            timer_update(key, dt)
+        }
 
-            case .ENTER:
-                using buffer
-                
-                line_number := cursor.y + 1
-                if cursor.y + 1 != len(lines) {
-                    line_number = cursor.y
-                }
+        key := rl.GetKeyPressed()
 
-                enter_before_end := cursor.x < len(lines[cursor.y].text)
-                text_to_copy: [dynamic]u8
-                defer if enter_before_end do free_all(context.temp_allocator)
+        if key_is_pressed_or_down(key, .BACKSPACE) {
+            press_backspace(&buffer)
+        }
 
-                if enter_before_end {
-                    whole_line := lines[cursor.y].text[:]
-                    start, end := cursor.x, len(whole_line)
-                    text_to_copy = make([dynamic]u8, 0, end - start, context.temp_allocator)
-                    append(&text_to_copy, ..whole_line[start:end])
-                    remove_range(&lines[cursor.y].text, start, end)
-                }
+        if key_is_pressed_or_down(key, .ENTER) {
+            press_enter(&buffer)
+        }
+        
+        if key_is_pressed_or_down(key, .UP) {
+            move_cursor_up(&buffer)
+        }
 
-                cursor.x = 0
-                cursor.y += 1
+        if key_is_pressed_or_down(key, .DOWN) {
+            move_cursor_down(&buffer)
+        }
 
-                inject_at(&lines, cursor.y, Line{line_number, make([dynamic]u8)})
+        if key_is_pressed_or_down(key, .LEFT) {
+            move_cursor_left(&buffer)
+        }
 
-                if enter_before_end {
-                    append(&lines[cursor.y].text, ..text_to_copy[:])
-                }
-
-                if cursor.y + 1 != len(lines) {
-                    for i := cursor.y; i < len(lines); i += 1 {
-                        lines[i].number += 1
-                    }
-                }
-            
-            case .UP:
-                using buffer
-                if cursor.y - 1 >= 0 {
-                    cursor.y -= 1
-                    if cursor.x > len(lines[cursor.y].text) {
-                        cursor.x = len(lines[cursor.y].text)
-                    }
-                }
-
-            case .DOWN:
-                using buffer
-                if cursor.y + 1 < len(lines) {
-                    cursor.y += 1
-                    if cursor.x > len(lines[cursor.y].text) {
-                        cursor.x = len(lines[cursor.y].text)
-                    }
-                }
-
-            case .RIGHT:
-                using buffer
-                if cursor.x + 1 <= len(lines[cursor.y].text) {
-                    cursor.x += 1
-                }
-                else if cursor.y + 1 < len(lines) {
-                    cursor.x = 0
-                    cursor.y += 1
-                }
-
-            case .LEFT:
-                using buffer
-                if cursor.x - 1 >= 0 {
-                    cursor.x -= 1
-                }
-                else if cursor.y - 1 >= 0 {
-                    cursor.y -= 1
-                    cursor.x = len(lines[cursor.y].text)
-                }
+        if key_is_pressed_or_down(key, .RIGHT) {
+            move_cursor_right(&buffer)
         }
 
         if rl.IsKeyPressed(.EQUAL) && rl.IsKeyDown(.LEFT_CONTROL) {
