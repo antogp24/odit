@@ -2,6 +2,7 @@ package odit
 import "core:fmt"
 import "core:math"
 import "core:strings"
+import "core:c/libc"
 import rl "vendor:raylib"
 
 DEBUG :: false
@@ -13,11 +14,11 @@ Line :: struct {
     text: [dynamic]u8
 }
 
-CursorPos :: struct {
-    x, y: int
-}
+CursorPos :: [2]int
 
 Buffer :: struct {
+    is_selection_active: bool,
+    select: CursorPos,
     cursor: CursorPos,
     lines: [dynamic]Line
 }
@@ -170,6 +171,28 @@ move_cursor_right :: proc(using buffer: ^Buffer) {
     }
 }
 
+get_selection_boundaries :: proc(using buffer: ^Buffer) -> (start, end: CursorPos) {
+    if !is_selection_active do return
+
+    if select.x < cursor.x {
+        start.x = select.x
+        end.x = cursor.x
+    }
+    else {
+        start.x = cursor.x
+        end.x = select.x
+    }
+    if select.y < cursor.y {
+        start.y = select.y
+        end.y = cursor.y
+    }
+    else {
+        start.y = cursor.y
+        end.y = select.y
+    }
+    return start, end
+}
+
 main :: proc() {
     rl.SetTargetFPS(60)
     rl.SetConfigFlags({.MSAA_4X_HINT, .WINDOW_RESIZABLE})
@@ -177,13 +200,15 @@ main :: proc() {
     defer rl.CloseWindow()
 
     font := rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
-    buffer := Buffer{{0, 0}, make([dynamic]Line)}
+    buffer: Buffer
+    buffer.lines = make([dynamic]Line, 0, 50)
 
     for !rl.WindowShouldClose() {
 
         dt := rl.GetFrameTime()
         char := i32(rl.GetCharPressed())
 
+        // Typing into the buffer.
         if (char >= ' ' && char <= '~') && !(rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.LEFT_ALT)) {
             using buffer
             if len(lines) == 0 {
@@ -191,8 +216,10 @@ main :: proc() {
             }
             inject_at(&lines[cursor.y].text, cursor.x, u8(char))
             cursor.x += 1
+            buffer.is_selection_active = false
         }
 
+        // Updating the time the movement keys have been held.
         for key in timers {
             timer_update(key, dt)
         }
@@ -201,10 +228,12 @@ main :: proc() {
 
         if key_is_pressed_or_down(key, .BACKSPACE) {
             press_backspace(&buffer)
+            buffer.is_selection_active = false
         }
 
         if key_is_pressed_or_down(key, .ENTER) {
             press_enter(&buffer)
+            buffer.is_selection_active = false
         }
         
         if key_is_pressed_or_down(key, .UP) {
@@ -223,6 +252,7 @@ main :: proc() {
             move_cursor_right(&buffer)
         }
 
+        // Scaling the font. Very expensive operation.
         if rl.IsKeyPressed(.EQUAL) && rl.IsKeyDown(.LEFT_CONTROL) {
             font_size += 1
             rl.UnloadFont(font)
@@ -232,6 +262,20 @@ main :: proc() {
             font_size -= 1
             rl.UnloadFont(font)
             font = rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
+        }
+
+        // Moving the selection.
+        {
+            using buffer
+            pressed_movement_keys := key == .UP || key == .DOWN || key == .LEFT || key == .RIGHT
+
+            if !is_selection_active && rl.IsKeyDown(.LEFT_SHIFT) && pressed_movement_keys {
+                is_selection_active = true
+                select.x, select.y = cursor.x, cursor.y
+            }
+            else if is_selection_active && !rl.IsKeyDown(.LEFT_SHIFT) && pressed_movement_keys {
+                is_selection_active = false
+            }
         }
 
         rl.BeginDrawing()
@@ -245,11 +289,17 @@ main :: proc() {
 
             // Buffer text
             when DEBUG do fmt.println("---------------------")
+            start, end := get_selection_boundaries(&buffer)
             for _, i in lines {
                 when DEBUG do fmt.println(lines[i].number, ":", transmute(string)lines[i].text[:])
                 text := copy_to_cstring(lines[i].text)
                 pos := rl.Vector2{0, f32(lines[i].number*cast(int)font_size)}
                 rl.DrawTextEx(font, text, pos, f32(font_size), 0, rl.WHITE)
+
+                if is_selection_active {
+                    rl.DrawText(rl.TextFormat("start: %i, %i", start.x, start.y), 300, 0, 30, rl.WHITE)
+                    rl.DrawText(rl.TextFormat("end  : %i, %i", end.x, end.y), 300, 30, 30, rl.WHITE)
+                }
             }
             free_all(context.temp_allocator)
             when DEBUG do fmt.println("---------------------")
