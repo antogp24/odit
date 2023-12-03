@@ -5,7 +5,7 @@ import "core:strings"
 import "core:c/libc"
 import rl "vendor:raylib"
 
-DEBUG :: true
+DEBUG :: false
 
 CURSOR_COLOR    :: rl.GREEN
 SELECTION_COLOR :: rl.BLUE
@@ -13,7 +13,6 @@ SELECTION_COLOR :: rl.BLUE
 font_size := f32(24)
 
 Line :: struct {
-    number: int,
     text: [dynamic]u8
 }
 
@@ -34,7 +33,7 @@ is_selection_active :: proc(using buffer: ^Buffer) -> bool {
 }
 
 reset_selection :: proc(using buffer: ^Buffer) {
-    select.x, select.y = cursor.x, cursor.y
+    select = cursor
 }
 
 string_to_u8_dyn :: proc(text: string) -> [dynamic]u8 {
@@ -100,9 +99,6 @@ press_backspace :: proc(using buffer: ^Buffer) {
         cursor.y -= 1
         cursor.x = len(lines[cursor.y].text)
         append(&lines[cursor.y].text, ..whole_line)
-        for i := cursor.y + 1; i < len(lines); i += 1 {
-            lines[i].number -= 1
-        }
     }
     else if len(lines[cursor.y].text) > 0 {
         if cursor.x - 1 >= 0 {
@@ -112,9 +108,41 @@ press_backspace :: proc(using buffer: ^Buffer) {
     }
 }
 
+delete_selection :: proc(using buffer: ^Buffer) {
+    start, end := get_selection_boundaries(buffer)
+
+    // Easiest case.
+    if start.y == end.y {
+        remove_range(&lines[cursor.y].text, start.x, end.x)
+        cursor = start
+        return
+    }
+
+    // Remove all lines in the middle.
+    for i, removed := start.y + 1, 0; i <= end.y - 1; i += 1 {
+        ordered_remove(&lines, i-removed)
+        removed += 1
+    }
+    end.y = start.y + 1
+
+    // Remove text at the boundary lines.
+    remove_range(&lines[start.y].text, start.x, len(lines[start.y].text))
+    remove_range(&lines[end.y].text, 0, end.x)
+
+    // Add the remaining text from the end line to the start line.
+    remaining := lines[end.y].text[:len(lines[end.y].text)]
+    append(&lines[start.y].text, ..remaining)
+    ordered_remove(&lines, end.y)
+
+    cursor = start
+}
+
 press_enter :: proc(using buffer: ^Buffer) {
-    line_number := cursor.y + 1
-    if cursor.y + 1 != len(lines) {
+    line_number: int
+    if cursor.y + 1 == len(lines) {
+        line_number = cursor.y + 1
+    }
+    else {
         line_number = cursor.y
     }
 
@@ -133,16 +161,11 @@ press_enter :: proc(using buffer: ^Buffer) {
     cursor.x = 0
     cursor.y += 1
 
-    inject_at(&lines, cursor.y, Line{line_number, make([dynamic]u8)})
+    // inject_at(&lines, cursor.y, Line{line_number, make([dynamic]u8)})
+    inject_at(&lines, cursor.y, Line{make([dynamic]u8)})
 
     if enter_before_end {
         append(&lines[cursor.y].text, ..text_to_copy[:])
-    }
-
-    if cursor.y + 1 != len(lines) {
-        for i := cursor.y; i < len(lines); i += 1 {
-            lines[i].number += 1
-        }
     }
 }
 
@@ -224,7 +247,7 @@ main :: proc() {
         if (char >= ' ' && char <= '~') && !(rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.LEFT_ALT)) {
             using buffer
             if len(lines) == 0 {
-                append(&lines, Line{0, make([dynamic]u8)})
+                append(&lines, Line{make([dynamic]u8)})
             }
             inject_at(&lines[cursor.y].text, cursor.x, u8(char))
             cursor.x += 1
@@ -239,8 +262,14 @@ main :: proc() {
         key := rl.GetKeyPressed()
 
         if key_is_pressed_or_down(key, .BACKSPACE) {
-            press_backspace(&buffer)
-            reset_selection(&buffer)
+            if is_selection_active(&buffer) {
+                delete_selection(&buffer)
+                reset_selection(&buffer)
+            }
+            else {
+                press_backspace(&buffer)
+                reset_selection(&buffer)
+            }
         }
 
         if key_is_pressed_or_down(key, .ENTER) {
@@ -312,9 +341,9 @@ main :: proc() {
                 }
 
                 // Buffer text
-                when DEBUG do fmt.println(line.number, ":", transmute(string)line.text[:])
+                when DEBUG do fmt.println(i, ":", transmute(string)line.text[:])
                 text := u8_copy_to_cstring(line.text)
-                pos := rl.Vector2{0, f32(line.number)*font_size}
+                pos := rl.Vector2{0, f32(i)*font_size}
                 rl.DrawTextEx(font, text, pos, font_size, 0, rl.WHITE)
             }
             free_all(context.temp_allocator)
