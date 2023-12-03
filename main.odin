@@ -119,10 +119,7 @@ delete_selection :: proc(using buffer: ^Buffer) {
     }
 
     // Remove all lines in the middle.
-    for i, removed := start.y + 1, 0; i <= end.y - 1; i += 1 {
-        ordered_remove(&lines, i-removed)
-        removed += 1
-    }
+    remove_range(&lines, start.y + 1, end.y)
     end.y = start.y + 1
 
     // Remove text at the boundary lines.
@@ -138,13 +135,7 @@ delete_selection :: proc(using buffer: ^Buffer) {
 }
 
 press_enter :: proc(using buffer: ^Buffer) {
-    line_number: int
-    if cursor.y + 1 == len(lines) {
-        line_number = cursor.y + 1
-    }
-    else {
-        line_number = cursor.y
-    }
+    if len(lines) == 0 do append(&lines, Line{make([dynamic]u8)})
 
     enter_before_end := cursor.x < len(lines[cursor.y].text)
     text_to_copy: [dynamic]u8
@@ -161,7 +152,6 @@ press_enter :: proc(using buffer: ^Buffer) {
     cursor.x = 0
     cursor.y += 1
 
-    // inject_at(&lines, cursor.y, Line{line_number, make([dynamic]u8)})
     inject_at(&lines, cursor.y, Line{make([dynamic]u8)})
 
     if enter_before_end {
@@ -232,22 +222,38 @@ main :: proc() {
     rl.InitWindow(600, 400, "Odit")
     defer rl.CloseWindow()
 
+    camera := rl.Camera2D{}
+    camera.zoom = 1
+
     font := rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
     buffer: Buffer
     buffer.lines = make([dynamic]Line, 0, 50)
 
     for !rl.WindowShouldClose() {
 
+        dt := rl.GetFrameTime()
+        screen_width, screen_height := f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())
         font_width, font_height := get_font_dimentions(&font)
 
-        dt := rl.GetFrameTime()
+        camera_rect := rl.Rectangle{camera.target.x, camera.target.y, screen_width, screen_height}
+        cursor_rect := rl.Rectangle{f32(buffer.cursor.x)*font_width, f32(buffer.cursor.y)*font_height, font_width, font_height}
+
+        // Moving the camera.
+        if !rl.CheckCollisionRecs(camera_rect, cursor_rect) {
+            if camera_rect.x < cursor_rect.x do camera.target.x += font_width
+            else if camera_rect.x > cursor_rect.x do camera.target.x -= font_width
+            else if camera_rect.y < cursor_rect.y do camera.target.y += font_height
+            else if camera_rect.y > cursor_rect.y do camera.target.y -= font_height
+        }
+
         char := i32(rl.GetCharPressed())
 
         // Typing into the buffer.
         if (char >= ' ' && char <= '~') && !(rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.LEFT_ALT)) {
             using buffer
-            if len(lines) == 0 {
-                append(&lines, Line{make([dynamic]u8)})
+            if len(lines) == 0 do append(&lines, Line{make([dynamic]u8)})
+            if is_selection_active(&buffer) {
+                delete_selection(&buffer)
             }
             inject_at(&lines[cursor.y].text, cursor.x, u8(char))
             cursor.x += 1
@@ -262,17 +268,13 @@ main :: proc() {
         key := rl.GetKeyPressed()
 
         if key_is_pressed_or_down(key, .BACKSPACE) {
-            if is_selection_active(&buffer) {
-                delete_selection(&buffer)
-                reset_selection(&buffer)
-            }
-            else {
-                press_backspace(&buffer)
-                reset_selection(&buffer)
-            }
+            if is_selection_active(&buffer) do delete_selection(&buffer)
+            else do press_backspace(&buffer)
+            reset_selection(&buffer)
         }
 
         if key_is_pressed_or_down(key, .ENTER) {
+            if is_selection_active(&buffer) do delete_selection(&buffer)
             press_enter(&buffer)
             reset_selection(&buffer)
         }
@@ -311,6 +313,7 @@ main :: proc() {
 
         rl.BeginDrawing()
         rl.ClearBackground(rl.BLACK)
+        rl.BeginMode2D(camera)
         {
             using buffer
 
@@ -329,7 +332,8 @@ main :: proc() {
                         rec = rl.Rectangle{f32(start.x)*font_width, f32(start.y)*font_height, f32(end.x - start.x)*font_width, font_height}
                     }
                     else if i == start.y {
-                        rec = rl.Rectangle{f32(start.x)*font_width, f32(start.y)*font_height, f32(len(line.text) - start.x)*font_width, font_height}
+                        width := max(len(line.text) - start.x, 0)
+                        rec = rl.Rectangle{f32(start.x)*font_width, f32(start.y)*font_height, f32(width)*font_width, font_height}
                     }
                     else if start.y < i && i < end.y {
                         rec = rl.Rectangle{0, f32(i)*font_height, f32(len(line.text))*font_width, font_height}
@@ -337,6 +341,7 @@ main :: proc() {
                     else if i == end.y {
                         rec = rl.Rectangle{0, f32(end.y)*font_height, f32(end.x)*font_width, font_height}
                     }
+                    if rec.width == 0 && i != cursor.y do rec.width = font_width / 4
                     rl.DrawRectangleRec(rec, SELECTION_COLOR)
                 }
 
@@ -349,14 +354,16 @@ main :: proc() {
             free_all(context.temp_allocator)
             when DEBUG do fmt.println("---------------------")
 
-            when DEBUG {
-                if len(lines) > 0 {
-                    rl.DrawText(rl.TextFormat("line width: %i", i32(len(lines[cursor.y].text))), 400, 0, 30, rl.WHITE)
-                }
-                rl.DrawText(rl.TextFormat("line count: %i", i32(len(lines))), 400, 30, 30, rl.WHITE)
-                rl.DrawText(rl.TextFormat("cursor: %i, %i", i32(cursor.x), i32(cursor.y)), 400, 60, 30, rl.WHITE)
-                rl.DrawText(rl.TextFormat("select: %i, %i", i32(select.x), i32(select.y)), 400, 90, 30, rl.WHITE)
+        }
+        rl.EndMode2D()
+
+        when DEBUG {
+            if len(lines) > 0 {
+                rl.DrawText(rl.TextFormat("line width: %i", i32(len(lines[cursor.y].text))), 400, 0, 30, rl.WHITE)
             }
+            rl.DrawText(rl.TextFormat("line count: %i", i32(len(lines))), 400, 30, 30, rl.WHITE)
+            rl.DrawText(rl.TextFormat("cursor: %i, %i", i32(cursor.x), i32(cursor.y)), 400, 60, 30, rl.WHITE)
+            rl.DrawText(rl.TextFormat("select: %i, %i", i32(select.x), i32(select.y)), 400, 90, 30, rl.WHITE)
         }
         rl.EndDrawing()
     }
