@@ -5,9 +5,12 @@ import "core:strings"
 import "core:c/libc"
 import rl "vendor:raylib"
 
-DEBUG :: false
+DEBUG :: true
 
-font_size := i32(24)
+CURSOR_COLOR    :: rl.GREEN
+SELECTION_COLOR :: rl.BLUE
+
+font_size := f32(24)
 
 Line :: struct {
     number: int,
@@ -16,11 +19,22 @@ Line :: struct {
 
 CursorPos :: [2]int
 
+draw_cursor :: proc(pos: CursorPos, font_width, font_height: f32, color := CURSOR_COLOR) {
+    rl.DrawRectangleRec(rl.Rectangle{f32(pos.x)*font_width, f32(pos.y)*font_height, font_width, font_height}, color)
+}
+
 Buffer :: struct {
-    is_selection_active: bool,
     select: CursorPos,
     cursor: CursorPos,
     lines: [dynamic]Line
+}
+
+is_selection_active :: proc(using buffer: ^Buffer) -> bool {
+    return !(select.x == cursor.x && select.y == cursor.y)
+}
+
+reset_selection :: proc(using buffer: ^Buffer) {
+    select.x, select.y = cursor.x, cursor.y
 }
 
 string_to_u8_dyn :: proc(text: string) -> [dynamic]u8 {
@@ -31,16 +45,16 @@ string_to_u8_dyn :: proc(text: string) -> [dynamic]u8 {
     return result
 }
 
-alias_as_cstring :: proc(text: [dynamic]u8) -> cstring {
+u8_alias_as_cstring :: proc(text: [dynamic]u8) -> cstring {
     return strings.unsafe_string_to_cstring(transmute(string)text[:])
 }
 
-copy_to_cstring :: proc(text: [dynamic]u8, alloc := context.temp_allocator) -> cstring {
+u8_copy_to_cstring :: proc(text: [dynamic]u8, alloc := context.temp_allocator) -> cstring {
     return strings.clone_to_cstring(transmute(string)text[:], alloc)
 }
 
 get_font_dimentions :: proc(font: ^rl.Font) -> (width, height: f32) {
-    mz := rl.MeasureTextEx(font^, "a", f32(font_size), 0)
+    mz := rl.MeasureTextEx(font^, "a", font_size, 0)
     width, height = mz.x, mz.y
     return 
 }
@@ -172,25 +186,21 @@ move_cursor_right :: proc(using buffer: ^Buffer) {
 }
 
 get_selection_boundaries :: proc(using buffer: ^Buffer) -> (start, end: CursorPos) {
-    if !is_selection_active do return
-
-    if select.x < cursor.x {
-        start.x = select.x
-        end.x = cursor.x
+    if select.y == cursor.y {
+        if select.x < cursor.x {
+            return select, cursor
+        }
+        else if select.x > cursor.x {
+            return cursor, select
+        }
     }
-    else {
-        start.x = cursor.x
-        end.x = select.x
+    else if select.y < cursor.y {
+        return select, cursor
     }
-    if select.y < cursor.y {
-        start.y = select.y
-        end.y = cursor.y
+    else if select.y > cursor.y {
+        return cursor, select
     }
-    else {
-        start.y = cursor.y
-        end.y = select.y
-    }
-    return start, end
+    return
 }
 
 main :: proc() {
@@ -205,6 +215,8 @@ main :: proc() {
 
     for !rl.WindowShouldClose() {
 
+        font_width, font_height := get_font_dimentions(&font)
+
         dt := rl.GetFrameTime()
         char := i32(rl.GetCharPressed())
 
@@ -216,7 +228,7 @@ main :: proc() {
             }
             inject_at(&lines[cursor.y].text, cursor.x, u8(char))
             cursor.x += 1
-            buffer.is_selection_active = false
+            reset_selection(&buffer)
         }
 
         // Updating the time the movement keys have been held.
@@ -228,28 +240,32 @@ main :: proc() {
 
         if key_is_pressed_or_down(key, .BACKSPACE) {
             press_backspace(&buffer)
-            buffer.is_selection_active = false
+            reset_selection(&buffer)
         }
 
         if key_is_pressed_or_down(key, .ENTER) {
             press_enter(&buffer)
-            buffer.is_selection_active = false
+            reset_selection(&buffer)
         }
         
         if key_is_pressed_or_down(key, .UP) {
             move_cursor_up(&buffer)
+            if !rl.IsKeyDown(.LEFT_SHIFT) do reset_selection(&buffer)
         }
 
         if key_is_pressed_or_down(key, .DOWN) {
             move_cursor_down(&buffer)
+            if !rl.IsKeyDown(.LEFT_SHIFT) do reset_selection(&buffer)
         }
 
         if key_is_pressed_or_down(key, .LEFT) {
             move_cursor_left(&buffer)
+            if !rl.IsKeyDown(.LEFT_SHIFT) do reset_selection(&buffer)
         }
 
         if key_is_pressed_or_down(key, .RIGHT) {
             move_cursor_right(&buffer)
+            if !rl.IsKeyDown(.LEFT_SHIFT) do reset_selection(&buffer)
         }
 
         // Scaling the font. Very expensive operation.
@@ -264,52 +280,53 @@ main :: proc() {
             font = rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
         }
 
-        // Moving the selection.
-        {
-            using buffer
-            pressed_movement_keys := key == .UP || key == .DOWN || key == .LEFT || key == .RIGHT
-
-            if !is_selection_active && rl.IsKeyDown(.LEFT_SHIFT) && pressed_movement_keys {
-                is_selection_active = true
-                select.x, select.y = cursor.x, cursor.y
-            }
-            else if is_selection_active && !rl.IsKeyDown(.LEFT_SHIFT) && pressed_movement_keys {
-                is_selection_active = false
-            }
-        }
-
         rl.BeginDrawing()
         rl.ClearBackground(rl.BLACK)
         {
             using buffer
 
-            // Cursor
-            width, height := get_font_dimentions(&font)
-            rl.DrawRectangleRec(rl.Rectangle{f32(cursor.x)*width, f32(cursor.y)*height, width, height}, rl.GREEN)
-
-            // Buffer text
             when DEBUG do fmt.println("---------------------")
-            start, end := get_selection_boundaries(&buffer)
-            for _, i in lines {
-                when DEBUG do fmt.println(lines[i].number, ":", transmute(string)lines[i].text[:])
-                text := copy_to_cstring(lines[i].text)
-                pos := rl.Vector2{0, f32(lines[i].number*cast(int)font_size)}
-                rl.DrawTextEx(font, text, pos, f32(font_size), 0, rl.WHITE)
 
-                if is_selection_active {
-                    rl.DrawText(rl.TextFormat("start: %i, %i", start.x, start.y), 300, 0, 30, rl.WHITE)
-                    rl.DrawText(rl.TextFormat("end  : %i, %i", end.x, end.y), 300, 30, 30, rl.WHITE)
+            start, end: CursorPos
+            if is_selection_active(&buffer) do start, end = get_selection_boundaries(&buffer)
+            draw_cursor(cursor, font_width, font_height)
+
+            for line, i in lines {
+                // Selection
+                if is_selection_active(&buffer) {
+                    if cursor.x <= start.x && cursor.y == i do start.x += 1
+                    rec: rl.Rectangle
+                    if start.y == end.y && i == start.y {
+                        rec = rl.Rectangle{f32(start.x)*font_width, f32(start.y)*font_height, f32(end.x - start.x)*font_width, font_height}
+                    }
+                    else if i == start.y {
+                        rec = rl.Rectangle{f32(start.x)*font_width, f32(start.y)*font_height, f32(len(line.text) - start.x)*font_width, font_height}
+                    }
+                    else if start.y < i && i < end.y {
+                        rec = rl.Rectangle{0, f32(i)*font_height, f32(len(line.text))*font_width, font_height}
+                    }
+                    else if i == end.y {
+                        rec = rl.Rectangle{0, f32(end.y)*font_height, f32(end.x)*font_width, font_height}
+                    }
+                    rl.DrawRectangleRec(rec, SELECTION_COLOR)
                 }
+
+                // Buffer text
+                when DEBUG do fmt.println(line.number, ":", transmute(string)line.text[:])
+                text := u8_copy_to_cstring(line.text)
+                pos := rl.Vector2{0, f32(line.number)*font_size}
+                rl.DrawTextEx(font, text, pos, font_size, 0, rl.WHITE)
             }
             free_all(context.temp_allocator)
             when DEBUG do fmt.println("---------------------")
 
             when DEBUG {
                 if len(lines) > 0 {
-                    rl.DrawText(rl.TextFormat("len(text): %i", i32(len(lines[cursor.y].text))), 400, 0, 30, rl.WHITE)
+                    rl.DrawText(rl.TextFormat("line width: %i", i32(len(lines[cursor.y].text))), 400, 0, 30, rl.WHITE)
                 }
-                rl.DrawText(rl.TextFormat("len(lines): %i", i32(len(lines))), 400, 30, 30, rl.WHITE)
+                rl.DrawText(rl.TextFormat("line count: %i", i32(len(lines))), 400, 30, 30, rl.WHITE)
                 rl.DrawText(rl.TextFormat("cursor: %i, %i", i32(cursor.x), i32(cursor.y)), 400, 60, 30, rl.WHITE)
+                rl.DrawText(rl.TextFormat("select: %i, %i", i32(select.x), i32(select.y)), 400, 90, 30, rl.WHITE)
             }
         }
         rl.EndDrawing()
