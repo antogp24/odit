@@ -16,16 +16,19 @@ Line :: struct {
     text: [dynamic]u8
 }
 
-CursorPos :: [2]int
+get_digit_count :: proc(number: int) -> int {
+    return cast(int)math.log10_f32(cast(f32)number) + 1
+}
 
-draw_cursor :: proc(pos: CursorPos, font_width, font_height: f32, color := CURSOR_COLOR) {
-    rl.DrawRectangleRec(rl.Rectangle{f32(pos.x)*font_width, f32(pos.y)*font_height, font_width, font_height}, color)
+get_line_number_width :: proc(using buffer: ^Buffer, font_width: f32) -> f32 {
+    return cast(f32)get_digit_count(len(lines))*font_width
 }
 
 Buffer :: struct {
-    select: CursorPos,
-    cursor: CursorPos,
-    lines: [dynamic]Line
+    offset: [2]f32,
+    select: [2]int,
+    cursor: [2]int,
+    lines:  [dynamic]Line
 }
 
 is_selection_active :: proc(using buffer: ^Buffer) -> bool {
@@ -198,7 +201,7 @@ move_cursor_right :: proc(using buffer: ^Buffer) {
     }
 }
 
-get_selection_boundaries :: proc(using buffer: ^Buffer) -> (start, end: CursorPos) {
+get_selection_boundaries :: proc(using buffer: ^Buffer) -> (start, end: [2]int) {
     if select.y == cursor.y {
         if select.x < cursor.x {
             return select, cursor
@@ -214,6 +217,62 @@ get_selection_boundaries :: proc(using buffer: ^Buffer) -> (start, end: CursorPo
         return cursor, select
     }
     return
+}
+
+draw_cursor :: proc(pos: [2]int, offset: [2]f32, font_width, font_height: f32, color := CURSOR_COLOR) {
+    rect := rl.Rectangle {
+        offset.x + f32(pos.x)*font_width,
+        offset.y + f32(pos.y)*font_height,
+        font_width,
+        font_height,
+    }
+    rl.DrawRectangleRec(rect, color)
+}
+
+draw_line_selection :: proc(using buffer: ^Buffer, i: int, _start, end: [2]int, font_width, font_height: f32) {
+    rec: rl.Rectangle
+    start := _start
+    if cursor.x <= start.x && cursor.y == i do start.x += 1
+    if start.y == end.y && i == start.y {
+        rec = rl.Rectangle{f32(start.x)*font_width, f32(start.y)*font_height, f32(end.x - start.x)*font_width, font_height}
+    }
+    else if i == start.y {
+        width := max(len(lines[i].text) - start.x, 0)
+        rec = rl.Rectangle{f32(start.x)*font_width, f32(start.y)*font_height, f32(width)*font_width, font_height}
+    }
+    else if start.y < i && i < end.y {
+        rec = rl.Rectangle{0, f32(i)*font_height, f32(len(lines[i].text))*font_width, font_height}
+    }
+    else if i == end.y {
+        rec = rl.Rectangle{0, f32(end.y)*font_height, f32(end.x)*font_width, font_height}
+    }
+    if rec.width == 0 && i != cursor.y do rec.width = font_width / 4
+    rec.x += offset.x
+    rec.y += offset.y
+    rl.DrawRectangleRec(rec, SELECTION_COLOR)
+}
+
+draw_line_number :: proc(using buffer: ^Buffer, i: int, font_width, font_height: f32, font: rl.Font) {
+    rec := rl.Rectangle {
+        0,
+        f32(i)*font_height,
+        get_line_number_width(buffer, font_width) + font_width*2,
+        font_height,
+    }
+    pos := rl.Vector2 {
+        rec.x + rec.width - font_width - cast(f32)get_digit_count(i+1)*font_width,
+        rec.y,
+    }
+    rl.DrawRectangleRec(rec, rl.Color{20, 20, 50, 255})
+    rl.DrawTextEx(font, rl.TextFormat("%i", i+1), pos, font_size, 0, rl.WHITE)
+}
+
+draw_line_text :: proc(using buffer: ^Buffer, i: int, font_size: f32, font: rl.Font) {
+    text := u8_copy_to_cstring(lines[i].text)
+    pos := rl.Vector2{0, f32(i)*font_size}
+    pos.x += offset.x
+    pos.y += offset.y
+    rl.DrawTextEx(font, text, pos, font_size, 0, rl.WHITE)
 }
 
 main :: proc() {
@@ -234,6 +293,8 @@ main :: proc() {
         dt := rl.GetFrameTime()
         screen_width, screen_height := f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())
         font_width, font_height := get_font_dimentions(&font)
+
+        buffer.offset.x = get_line_number_width(&buffer, font_width) + font_width*2
 
         camera_rect := rl.Rectangle{camera.target.x, camera.target.y, screen_width, screen_height}
         cursor_rect := rl.Rectangle{f32(buffer.cursor.x)*font_width, f32(buffer.cursor.y)*font_height, font_width, font_height}
@@ -319,37 +380,19 @@ main :: proc() {
 
             when DEBUG do fmt.println("---------------------")
 
-            start, end: CursorPos
+            start, end: [2]int
             if is_selection_active(&buffer) do start, end = get_selection_boundaries(&buffer)
-            draw_cursor(cursor, font_width, font_height)
+            draw_cursor(cursor, offset, font_width, font_height)
 
-            for line, i in lines {
-                // Selection
+            for _, i in lines {
+                draw_line_number(&buffer, i, font_width, font_height, font)
+
                 if is_selection_active(&buffer) {
-                    if cursor.x <= start.x && cursor.y == i do start.x += 1
-                    rec: rl.Rectangle
-                    if start.y == end.y && i == start.y {
-                        rec = rl.Rectangle{f32(start.x)*font_width, f32(start.y)*font_height, f32(end.x - start.x)*font_width, font_height}
-                    }
-                    else if i == start.y {
-                        width := max(len(line.text) - start.x, 0)
-                        rec = rl.Rectangle{f32(start.x)*font_width, f32(start.y)*font_height, f32(width)*font_width, font_height}
-                    }
-                    else if start.y < i && i < end.y {
-                        rec = rl.Rectangle{0, f32(i)*font_height, f32(len(line.text))*font_width, font_height}
-                    }
-                    else if i == end.y {
-                        rec = rl.Rectangle{0, f32(end.y)*font_height, f32(end.x)*font_width, font_height}
-                    }
-                    if rec.width == 0 && i != cursor.y do rec.width = font_width / 4
-                    rl.DrawRectangleRec(rec, SELECTION_COLOR)
+                    draw_line_selection(&buffer, i, start, end, font_width, font_height)
                 }
 
-                // Buffer text
-                when DEBUG do fmt.println(i, ":", transmute(string)line.text[:])
-                text := u8_copy_to_cstring(line.text)
-                pos := rl.Vector2{0, f32(i)*font_size}
-                rl.DrawTextEx(font, text, pos, font_size, 0, rl.WHITE)
+                when DEBUG do fmt.println(i+1, ":", transmute(string)lines[i].text[:])
+                draw_line_text(&buffer, i, font_size, font)
             }
             free_all(context.temp_allocator)
             when DEBUG do fmt.println("---------------------")
