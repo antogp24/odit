@@ -201,6 +201,26 @@ move_cursor_right :: proc(using buffer: ^Buffer) {
     }
 }
 
+move_cursor_end :: proc(using buffer: ^Buffer) {
+    if len(lines) == 0 do return
+    cursor.x = len(lines[cursor.y].text)
+}
+
+home_toggle := true
+move_cursor_home :: proc(using buffer: ^Buffer) {
+    if len(lines) == 0 do return
+    cursor.x = 0
+}
+
+move_cursor_home_non_whitespace :: proc(using buffer: ^Buffer) {
+    if len(lines) == 0 do return
+    cursor.x = 0
+    for char in lines[cursor.y].text {
+        if cursor.x >= len(lines[cursor.y].text) || char != ' ' do return
+        cursor.x += 1
+    }
+}
+
 get_selection_boundaries :: proc(using buffer: ^Buffer) -> (start, end: [2]int) {
     if select.y == cursor.y {
         if select.x < cursor.x {
@@ -327,6 +347,18 @@ main :: proc() {
         }
 
         key := rl.GetKeyPressed()
+
+        if (rl.IsKeyPressed(.E) && rl.IsKeyDown(.LEFT_CONTROL))  || key == .END {
+            home_toggle = true
+            move_cursor_end(&buffer)
+            if !rl.IsKeyDown(.LEFT_SHIFT) do reset_selection(&buffer)
+        }
+        if (rl.IsKeyPressed(.A) && rl.IsKeyDown(.LEFT_CONTROL)) || key == .HOME {
+            if home_toggle do move_cursor_home(&buffer)
+            else do move_cursor_home_non_whitespace(&buffer)
+            home_toggle = !home_toggle
+            if !rl.IsKeyDown(.LEFT_SHIFT) do reset_selection(&buffer)
+        }
 
         if key_is_pressed_or_down(key, .BACKSPACE) {
             if is_selection_active(&buffer) do delete_selection(&buffer)
