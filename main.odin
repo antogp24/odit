@@ -6,15 +6,27 @@ import rl "vendor:raylib"
 
 DEBUG :: false
 SCROLLOFF :: 4
-CURSOR_COLOR :: rl.GREEN
-SELECTION_COLOR :: rl.BLUE
+FONT_SIZE_MIN :: 8
+FONT_SIZE_MAX :: 48
 
-font_size : f32 = 24
+COLOR_BG      :: rl.Color{7, 38, 39, 255}
+COLOR_CURSOR  :: rl.Color{151, 233, 152, 255}
+COLOR_TEXT    :: rl.Color{180, 173, 158, 255}
+COLOR_SELECT  :: rl.BLUE
+COLOR_LN_BG   :: rl.Color{10, 30, 50, 255}
+COLOR_LN_FG   :: COLOR_TEXT
+COLOR_CMD_BG  :: rl.Color{4, 17, 19, 255}
+COLOR_CMD_FG  :: COLOR_TEXT
+COLOR_CMD_ERR :: rl.Color{234, 69, 85, 255}
+
+camera := rl.Camera2D{}
 home_toggle := true
 
-Line :: struct {
-    text: [dynamic]u8
-}
+font: rl.Font
+font_size : f32 = 24
+screen_width, screen_height, font_width, font_height: f32
+
+Line :: struct { text: [dynamic]u8 }
 
 Buffer :: struct {
     offset: [2]f32,
@@ -27,8 +39,7 @@ timers := map[rl.KeyboardKey]f32 {
     .BACKSPACE = 0.0,
     .ENTER     = 0.0,
     .UP        = 0.0,
-    .DOWN      = 0.0,
-    .LEFT      = 0.0,
+    .DOWN      = 0.0, .LEFT      = 0.0,
     .RIGHT     = 0.0,
 }
 
@@ -38,51 +49,50 @@ main :: proc() {
     rl.InitWindow(600, 400, "Odit")
     defer rl.CloseWindow()
 
-    camera := rl.Camera2D{}
+    rl.SetExitKey(.KEY_NULL)
+
     camera.zoom = 1
 
-    font := rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
+    font = rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
     buffer: Buffer
     buffer.lines = make([dynamic]Line, 0, 50)
-    get_command_names()
+    append(&buffer.lines, Line{make([dynamic]u8)})
+
+    screen_width, screen_height = f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())
+    font_width, font_height = get_font_dimentions(&font)
 
     for !rl.WindowShouldClose() {
 
         dt := rl.GetFrameTime()
-        screen_width, screen_height := f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())
-        font_width, font_height := get_font_dimentions(&font)
 
-        buffer.offset.x = get_line_number_width(&buffer, font_width) + font_width*2
+        screen_width, screen_height = f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())
+        font_width, font_height = get_font_dimentions(&font)
 
-        cursor_rect := rl.Rectangle{f32(buffer.cursor.x)*font_width, f32(buffer.cursor.y)*font_height, font_width, font_height }
-        camera_rect, scroll_rect := get_camera_rects(&buffer, &camera, screen_width, screen_height, font_width, font_height)
+        buffer.offset.x = get_line_number_width(&buffer) + font_width*2
+
 
         // Moving the camera.
-        for !rl.CheckCollisionRecs(camera_rect, cursor_rect) {
-            if camera_rect.x < cursor_rect.x do camera.target.x += font_width
-            if camera_rect.x > cursor_rect.x do camera.target.x -= font_width
-            camera_rect, scroll_rect = get_camera_rects(&buffer, &camera, screen_width, screen_height, font_width, font_height)
-        }
-        if buffer.cursor.y >= SCROLLOFF {
-            for !rl.CheckCollisionRecs(scroll_rect, cursor_rect) {
-                if scroll_rect.y < cursor_rect.y do camera.target.y += font_height
-                if scroll_rect.y > cursor_rect.y do camera.target.y -= font_height
-                camera_rect, scroll_rect = get_camera_rects(&buffer, &camera, screen_width, screen_height, font_width, font_height)
-            }
-        }
+        check_camera_collision_x(&buffer)
+        check_camera_collision_y(&buffer)
 
         char := i32(rl.GetCharPressed())
 
         // Typing into the buffer.
         if (char >= ' ' && char <= '~') && !(rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.LEFT_ALT)) {
-            using buffer
-            if len(lines) == 0 do append(&lines, Line{make([dynamic]u8)})
-            if is_selection_active(&buffer) {
-                delete_selection(&buffer)
+            if !command_bar.active {
+                using buffer
+                if len(lines) == 0 do append(&lines, Line{make([dynamic]u8)})
+                if is_selection_active(&buffer) {
+                    delete_selection(&buffer)
+                }
+                inject_at(&lines[cursor.y].text, cursor.x, u8(char))
+                cursor.x += 1
+                reset_selection(&buffer)
+            } else {
+                using command_bar
+                inject_at(&text, cursor, u8(char))
+                cursor += 1
             }
-            inject_at(&lines[cursor.y].text, cursor.x, u8(char))
-            cursor.x += 1
-            reset_selection(&buffer)
         }
 
         // Updating the time the movement keys have been held.
@@ -92,28 +102,56 @@ main :: proc() {
 
         key := rl.GetKeyPressed()
 
-        if (rl.IsKeyPressed(.E) && rl.IsKeyDown(.LEFT_CONTROL))  || key == .END {
+        if key == .TAB && !command_bar.active {
+            using buffer
+            if len(lines) == 0 do append(&lines, Line{make([dynamic]u8)})
+            if is_selection_active(&buffer) {
+                delete_selection(&buffer)
+            }
+            indent := "    "
+            inject_at_elem_string(&lines[cursor.y].text, cursor.x, indent)
+            cursor.x += len(indent)
+            reset_selection(&buffer)
+        }
+        if (rl.IsKeyDown(.LEFT_CONTROL) && rl.IsKeyPressed(.E))  || key == .END {
             home_toggle = true
             move_cursor_end(&buffer)
             if !rl.IsKeyDown(.LEFT_SHIFT) do reset_selection(&buffer)
         }
-        if (rl.IsKeyPressed(.A) && rl.IsKeyDown(.LEFT_CONTROL)) || key == .HOME {
+        if (rl.IsKeyDown(.LEFT_CONTROL) && rl.IsKeyPressed(.A)) || key == .HOME {
             if home_toggle do move_cursor_home(&buffer)
             else do move_cursor_home_non_whitespace(&buffer)
             home_toggle = !home_toggle
             if !rl.IsKeyDown(.LEFT_SHIFT) do reset_selection(&buffer)
         }
 
+        if rl.IsKeyDown(.LEFT_ALT) && rl.IsKeyPressed(.X) {
+            command_bar.active = true
+            command_bar.error_t = 0
+        }
+        if rl.IsKeyPressed(.ESCAPE) && command_bar.active {
+            command_bar.active = false
+        }
+
         if key_is_pressed_or_down(key, .BACKSPACE) {
-            if is_selection_active(&buffer) do delete_selection(&buffer)
-            else do press_backspace(&buffer)
-            reset_selection(&buffer)
+            if !command_bar.active {
+                if is_selection_active(&buffer) do delete_selection(&buffer)
+                else do press_backspace(&buffer)
+                reset_selection(&buffer)
+            } else {
+                press_backspace(&buffer)
+            }
         }
 
         if key_is_pressed_or_down(key, .ENTER) {
-            if is_selection_active(&buffer) do delete_selection(&buffer)
-            press_enter(&buffer)
-            reset_selection(&buffer)
+            if !command_bar.active {
+                if is_selection_active(&buffer) do delete_selection(&buffer)
+                press_enter(&buffer)
+                reset_selection(&buffer)
+            } else {
+                command_bar_execute(&buffer, string(command_bar.text[:]))
+                command_bar.active = false
+            }
         }
         
         if key_is_pressed_or_down(key, .UP) {
@@ -139,16 +177,18 @@ main :: proc() {
         // Scaling the font. Very expensive operation.
         if rl.IsKeyPressed(.EQUAL) && rl.IsKeyDown(.LEFT_CONTROL) {
             font_size += 1
+            font_size = clamp(font_size, FONT_SIZE_MIN, FONT_SIZE_MAX)
             rl.UnloadFont(font)
             font = rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
         } else if rl.IsKeyPressed(.MINUS) && rl.IsKeyDown(.LEFT_CONTROL) {
             font_size -= 1
+            font_size = clamp(font_size, FONT_SIZE_MIN, FONT_SIZE_MAX)
             rl.UnloadFont(font)
             font = rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
         }
 
         rl.BeginDrawing()
-        rl.ClearBackground(rl.BLACK)
+        rl.ClearBackground(COLOR_BG)
         rl.BeginMode2D(camera)
         {
             using buffer
@@ -157,32 +197,45 @@ main :: proc() {
 
             start, end: [2]int
             if is_selection_active(&buffer) do start, end = get_selection_boundaries(&buffer)
-            draw_cursor(cursor, offset, font_width, font_height)
+            if !command_bar.active {
+                draw_cursor(cursor, offset)
+            }
 
             for _, i in lines {
-                draw_line_number(&buffer, i, font_width, font_height, font)
+                draw_line_number(&buffer, i, font)
 
                 if is_selection_active(&buffer) {
-                    draw_line_selection(&buffer, i, start, end, font_width, font_height)
+                    draw_line_selection(&buffer, i, start, end)
                 }
 
                 when DEBUG do fmt.println(i+1, ":", transmute(string)lines[i].text[:])
-                draw_line_text(&buffer, i, font_size, font)
+                draw_line_text(&buffer, i, font)
             }
-            free_all(context.temp_allocator)
+
+
             when DEBUG do fmt.println("---------------------")
 
         }
         rl.EndMode2D()
 
+        command_bar.error_t = max(command_bar.error_t - dt, 0)
+        draw_command_bar(font);
+        if command_bar.active {
+            draw_command_bar_cursor()
+            draw_command_bar_text(font)
+        } else if command_bar.error_t > 0 {
+            draw_command_bar_error(font)
+        }
+
         when DEBUG {
             if len(lines) > 0 {
-                rl.DrawText(rl.TextFormat("line width: %i", i32(len(lines[cursor.y].text))), 400, 0, 30, rl.WHITE)
+                rl.DrawText(rl.TextFormat("line width: %i", i32(len(lines[cursor.y].text))), 400, 0, 30, COLOR_TEXT)
             }
-            rl.DrawText(rl.TextFormat("line count: %i", i32(len(lines))), 400, 30, 30, rl.WHITE)
-            rl.DrawText(rl.TextFormat("cursor: %i, %i", i32(cursor.x), i32(cursor.y)), 400, 60, 30, rl.WHITE)
-            rl.DrawText(rl.TextFormat("select: %i, %i", i32(select.x), i32(select.y)), 400, 90, 30, rl.WHITE)
+            rl.DrawText(rl.TextFormat("line count: %i", i32(len(lines))), 400, 30, 30, COLOR_TEXT)
+            rl.DrawText(rl.TextFormat("cursor: %i, %i", i32(cursor.x), i32(cursor.y)), 400, 60, 30, COLOR_TEXT)
+            rl.DrawText(rl.TextFormat("select: %i, %i", i32(select.x), i32(select.y)), 400, 90, 30, COLOR_TEXT)
         }
         rl.EndDrawing()
+        free_all(context.temp_allocator)
     }
 }

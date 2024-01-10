@@ -9,7 +9,7 @@ digit_count :: proc(number: int) -> int {
     return cast(int)math.log10_f32(cast(f32)number) + 1
 }
 
-get_line_number_width :: proc(using buffer: ^Buffer, font_width: f32) -> f32 {
+get_line_number_width :: proc(using buffer: ^Buffer) -> f32 {
     return cast(f32)digit_count(len(lines))*font_width
 }
 
@@ -73,11 +73,35 @@ get_selection_boundaries :: proc(using buffer: ^Buffer) -> (start, end: [2]int) 
     return
 }
 
-get_camera_rects :: proc(using buffer: ^Buffer, camera: ^rl.Camera2D, screen_width, screen_height, font_width, font_height: f32) -> (camera_rect, scroll_rect: rl.Rectangle) {
+get_camera_rects :: proc(using buffer: ^Buffer) -> (camera_rect, scroll_rect: rl.Rectangle) {
     camera_rect = rl.Rectangle{camera.target.x, camera.target.y, screen_width - offset.x, screen_height - offset.y}
     scroll_rect = camera_rect
     scroll_rect.y += SCROLLOFF * font_height
     scroll_rect.height -= SCROLLOFF * font_height * 2
 
     return camera_rect, scroll_rect
+}
+
+check_camera_collision_x :: proc(using buffer: ^Buffer) {
+    cursor_rect := rl.Rectangle{f32(cursor.x)*font_width, f32(cursor.y)*font_height, font_width, font_height }
+    camera_rect, scroll_rect := get_camera_rects(buffer)
+
+    for !rl.CheckCollisionRecs(camera_rect, cursor_rect) {
+        if camera_rect.x < cursor_rect.x do camera.target.x += font_width
+        if camera_rect.x > cursor_rect.x do camera.target.x -= font_width
+        camera_rect, scroll_rect = get_camera_rects(buffer)
+    }
+}
+
+check_camera_collision_y:: proc(using buffer: ^Buffer) {
+    cursor_rect := rl.Rectangle{f32(cursor.x)*font_width, f32(cursor.y)*font_height, font_width, font_height }
+    camera_rect, scroll_rect := get_camera_rects(buffer)
+
+    if buffer.cursor.y >= SCROLLOFF {
+        for !rl.CheckCollisionRecs(scroll_rect, cursor_rect) {
+            if scroll_rect.y < cursor_rect.y do camera.target.y += font_height
+            if scroll_rect.y > cursor_rect.y do camera.target.y -= font_height
+            camera_rect, scroll_rect = get_camera_rects(buffer)
+        }
+    }
 }

@@ -1,26 +1,36 @@
 package odit
+import "core:fmt"
 import rl "vendor:raylib"
 
-press_backspace :: proc(using buffer: ^Buffer) {
-    if (cursor.x == 0 && cursor.y == 0) || len(lines) == 0 do return
-
-    if cursor.x == 0  && cursor.y - 1 >= 0 {
-        whole_line := lines[cursor.y].text[:]
-        if len(lines) >= 1 {
-            ordered_remove(&lines, cursor.y)
+press_backspace :: proc(buffer: ^Buffer) {
+    if !command_bar.active {
+        using buffer
+        if (cursor.x == 0 && cursor.y == 0) || len(lines) == 0 do return
+        if cursor.x == 0  && cursor.y - 1 >= 0 {
+            whole_line := lines[cursor.y].text[:]
+            if len(lines) >= 1 {
+                ordered_remove(&lines, cursor.y)
+            }
+            cursor.y -= 1
+            cursor.x = len(lines[cursor.y].text)
+            append(&lines[cursor.y].text, ..whole_line)
+        } else if len(lines[cursor.y].text) > 0 {
+            if cursor.x - 1 >= 0 {
+                cursor.x -= 1
+            }
+            ordered_remove(&lines[cursor.y].text, cursor.x)
         }
-        cursor.y -= 1
-        cursor.x = len(lines[cursor.y].text)
-        append(&lines[cursor.y].text, ..whole_line)
-    } else if len(lines[cursor.y].text) > 0 {
-        if cursor.x - 1 >= 0 {
-            cursor.x -= 1
+    } else {
+        using command_bar
+        if len(text) > 0 {
+            if cursor - 1 >= 0 do cursor -= 1
+            ordered_remove(&text, cursor)
         }
-        ordered_remove(&lines[cursor.y].text, cursor.x)
     }
 }
 
 delete_selection :: proc(using buffer: ^Buffer) {
+    if len(lines) == 0 do return
     start, end := get_selection_boundaries(buffer)
 
     // Easiest case.
@@ -125,11 +135,13 @@ move_cursor_home_non_whitespace :: proc(using buffer: ^Buffer) {
 
 goto_end_of_file :: proc(using buffer: ^Buffer) {
     if len(lines) == 0 do return
-    cursor.y = len(lines)
-    if cursor.x > len(lines[cursor.y].text) do cursor.x = len(lines[cursor.y].text)
+    cursor.y = len(lines) - 1
+    cursor.x = clamp(cursor.x, 0, len(lines[cursor.y].text))
+    camera.target.x, camera.target.y = 0, cast(f32)len(lines)*font_height - font_height*cast(f32)SCROLLOFF
 }
 
 goto_start_of_file :: proc(using buffer: ^Buffer) {
     if len(lines) == 0 do return
     cursor.x , cursor.y = 0, 0
+    camera.target.x, camera.target.y = 0, 0
 }

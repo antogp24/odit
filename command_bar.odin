@@ -1,8 +1,19 @@
 package odit
 
 import "core:os"
-import "core:fmt"
 import "core:strings"
+import "core:strconv"
+import "core:fmt"
+import rl "vendor:raylib"
+
+Command_Bar :: struct {
+    active: bool,
+    cursor: int,
+    error_t: f32,
+    text: [dynamic]u8,
+}
+
+command_bar := Command_Bar{false, 0, 0, make([dynamic]u8)}
 
 get_command_names :: proc() -> (names: [dynamic]string) {
 	names = make([dynamic]string, context.temp_allocator)
@@ -32,6 +43,58 @@ get_command_names :: proc() -> (names: [dynamic]string) {
 		name := get_name(line)
 		append(&names, name)
 	}
-	fmt.println(names)
 	return
+}
+
+command_bar_error_out :: proc() {
+    clear(&command_bar.text)
+    command_bar.cursor = 0
+    command_bar.error_t = 1.5
+}
+
+command_bar_execute :: proc(buffer: ^Buffer, _command: string) {
+    arguments := strings.split(_command, " ")
+    command := arguments[0]
+
+    if command == "press_backspace" {
+        press_backspace(buffer)
+    } else if command == "delete_selection" {
+        delete_selection(buffer)
+    } else if command == "press_enter" {
+        press_enter(buffer)
+    } else if command == "move_cursor_up" {
+        move_cursor_up(buffer)
+    } else if command == "move_cursor_down" {
+        move_cursor_down(buffer)
+    } else if command == "move_cursor_left" {
+        move_cursor_left(buffer)
+    } else if command == "move_cursor_right" {
+        move_cursor_right(buffer)
+    } else if command == "move_cursor_end" {
+        move_cursor_end(buffer)
+    } else if command == "move_cursor_home" {
+        move_cursor_home(buffer)
+    } else if command == "move_cursor_home_non_whitespace" {
+        move_cursor_home_non_whitespace(buffer)
+    } else if command == "goto_end_of_file" {
+        goto_end_of_file(buffer)
+    } else if command == "goto_start_of_file" {
+        goto_start_of_file(buffer)
+    } else if command == "font_size" && len(arguments) == 3 {
+        number, ok := strconv.parse_int(arguments[2])
+        if !ok do command_bar_error_out()
+        if ok {
+            if arguments[1] == "+" {
+                font_size += f32(number)
+            } else if arguments[1] == "-" {
+                font_size -= f32(number)
+            }
+            font_size = clamp(font_size, FONT_SIZE_MIN, FONT_SIZE_MAX)
+            rl.UnloadFont(font)
+            font = rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
+        } 
+    } else {
+        command_bar_error_out()
+    }
+    reset_selection(buffer)
 }
