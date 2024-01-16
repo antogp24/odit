@@ -1,7 +1,10 @@
 package odit
 
+import "core:fmt"
+import "core:os"
 import "core:math"
 import "core:strings"
+import "core:strconv"
 import rl "vendor:raylib"
 
 digit_count :: proc(number: int) -> int {
@@ -13,15 +16,7 @@ get_line_number_width :: proc(using buffer: ^Buffer) -> f32 {
     return cast(f32)digit_count(len(lines))*font_width
 }
 
-string_to_u8_dyn :: proc(text: string) -> [dynamic]u8 {
-    result := make([dynamic]u8)
-    for c in text {
-        append(&result, u8(c))
-    }
-    return result
-}
-
-u8_copy_to_cstring :: proc(text: [dynamic]u8, alloc := context.temp_allocator) -> cstring {
+buffer_copy_to_cstring :: proc(text: [dynamic]u8, alloc := context.temp_allocator) -> cstring {
     return strings.clone_to_cstring(transmute(string)text[:], alloc)
 }
 
@@ -104,4 +99,42 @@ check_camera_collision_y:: proc(using buffer: ^Buffer) {
             camera_rect, scroll_rect = get_camera_rects(buffer)
         }
     }
+}
+
+load_theme :: proc(path := "default.theme") -> (error: bool) {
+    whole_file := os.read_entire_file(path) or_return
+    text := strings.remove_all(string(whole_file), " ", context.temp_allocator) or_return
+    lines := strings.split_lines(transmute(string)text, context.temp_allocator)
+
+    for line in lines {
+        if len(line) == 0 do continue
+        values := strings.split(line, ":", context.temp_allocator)
+        lvalue, rvalue := values[0], values[1]
+        assert(lvalue in colors)
+        
+        if rvalue[0] == '{' {
+            members := rvalue[1:len(rvalue)-1]
+            rgba := strings.split(members, ",", context.temp_allocator)
+            if len(rgba) != 4 do return
+            r := cast(u8)strconv.parse_int(rgba[0]) or_return
+            g := cast(u8)strconv.parse_int(rgba[1]) or_return
+            b := cast(u8)strconv.parse_int(rgba[2]) or_return
+            a := cast(u8)strconv.parse_int(rgba[3]) or_return
+            colors[lvalue] = rl.Color{r, g, b, a}
+        } else if rvalue[0] == '@' {
+            name := rvalue[1:]
+            colors[lvalue] = colors[name]
+        }
+    }
+    free_all(context.temp_allocator)
+
+    fmt.println("Succesfully loaded ", path)
+    for key, value in colors {
+        fmt.printf("%v: %v\n", key, value)
+    }
+    return true
+}
+
+load_font :: proc() {
+    font = rl.LoadFontEx("assets/InconsolataGoNerdFontMono-Regular.ttf", i32(font_size), nil, 0)
 }

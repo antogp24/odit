@@ -6,8 +6,7 @@ import "core:strconv"
 import "core:fmt"
 import rl "vendor:raylib"
 
-Command_Bar :: struct {
-    active: bool,
+Command_Bar :: struct { active: bool,
     cursor: int,
     error_t: f32,
     text: [dynamic]u8,
@@ -80,7 +79,7 @@ command_bar_execute :: proc(buffer: ^Buffer, _command: string) {
         goto_end_of_file(buffer)
     } else if command == "goto_start_of_file" {
         goto_start_of_file(buffer)
-    } else if command == "font_size" && len(arguments) == 3 {
+    } else if command == "fontsize" && len(arguments) == 3 {
         number, ok := strconv.parse_int(arguments[2])
         if !ok do command_bar_error_out()
         if ok {
@@ -88,13 +87,31 @@ command_bar_execute :: proc(buffer: ^Buffer, _command: string) {
                 font_size += f32(number)
             } else if arguments[1] == "-" {
                 font_size -= f32(number)
+            } else {
+                command_bar_error_out()
             }
             font_size = clamp(font_size, FONT_SIZE_MIN, FONT_SIZE_MAX)
             rl.UnloadFont(font)
-            font = rl.LoadFontEx("assets/UbuntuMono-Regular.ttf", i32(font_size), nil, 0)
+            load_font()
         } 
+    } else if command == "exit" || command == "quit" {
+        quit = true
+    } else if command == "reloadtheme" {
+        if !load_theme() do command_bar_error_out()
     } else {
         command_bar_error_out()
     }
     reset_selection(buffer)
+}
+
+command_bar_ctrl_backspace :: proc(buffer: ^Buffer) {
+    using command_bar
+    for cursor > 0 && len(text) > 0 {
+        press_backspace(buffer)
+        if cursor == 0 do break
+        c := text[cursor-1] 
+        if c == ' ' || c == '_' || c == ';' || c == ',' {
+            break
+        }
+    }
 }

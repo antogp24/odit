@@ -37,6 +37,10 @@ delete_selection :: proc(using buffer: ^Buffer) {
     if start.y == end.y {
         remove_range(&lines[cursor.y].text, start.x, end.x)
         cursor = start
+        // camera.target.x = f32(cursor.x) * font_width
+        camera.target.x = 0
+        camera.target.y = f32(cursor.y) * font_height - SCROLLOFF*font_height
+        camera.target.y = max(camera.target.y, 0)
         return
     }
 
@@ -54,6 +58,9 @@ delete_selection :: proc(using buffer: ^Buffer) {
     ordered_remove(&lines, end.y)
 
     cursor = start
+    camera.target.x = 0
+    camera.target.y = f32(cursor.y) * font_height - SCROLLOFF*font_height
+    camera.target.y = max(camera.target.y, 0)
 }
 
 press_enter :: proc(using buffer: ^Buffer) {
